@@ -27,7 +27,7 @@ CONTROL_OPTIONS = """CONTROL OPTIONS:
     u (up)      - go to the upper chapter list
 """
 
-DATABASE = 'blogs.db'
+DATABASE = 'library.db'
 LIBRARY_DIR = 'library'
 MAX_LEN = 5
 PDF_LIBRARY = 'pdf_library'
