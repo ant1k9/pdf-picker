@@ -17,7 +17,7 @@ from PyPDF2.generic import Destination
 ## Constants
 ############################################################
 
-DATABASE = 'library.db'
+DATABASE = 'library_everyday.db'
 LIBRARY_DIR = 'library'
 MAX_LEN = 5
 PDF_LIBRARY = 'pdf_library'
