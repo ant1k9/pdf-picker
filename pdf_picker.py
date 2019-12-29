@@ -157,7 +157,9 @@ class Paper:
                 if previous_level < current_level:
                     for outline in previous_outlines[(previous_idx + 1):]:
                         if isinstance(outline, Destination):
-                            return reader.getDestinationPageNumber(outline) - current_page
+                            chapter_pages = reader.getDestinationPageNumber(outline) - current_page
+                            if chapter_pages > 0:
+                                return reader.getDestinationPageNumber(outline) - current_page
         return reader.numPages - current_page
 
     def __choose(self, reader: PdfFileReader, outlines: list, idx: int):
