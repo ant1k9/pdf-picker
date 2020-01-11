@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
-import os
 import pathlib
 import random
 import typing
 
-from argparse import ArgumentParser
 from datetime import datetime
-from glob import glob
 from os.path import join
 
 import sqlite3
@@ -91,7 +88,7 @@ class Paper:
         self.__writer = PdfFileWriter()
         self.__written_pages = 0
 
-    def __accumulate_pages(self, reader: PdfFileReader,  book: dict):
+    def __accumulate_pages(self, reader: PdfFileReader, book: dict):
         idx = 0
         collected_pages = 0
 
@@ -116,6 +113,8 @@ class Paper:
                 if collected_pages >= SOFT_LIMIT or hash_size == len(self.state_list):
                     for _ in range(5):
                         if len(self.state_list) == hash_size:
+                            if self.__is_the_end(reader, outlines, idx):
+                                continue
                             self.__up(reader, outlines, idx)
                             hash_size = len(self.state_list)
                             _, outlines, idx = self.state_list[-1]
@@ -191,24 +190,26 @@ class Paper:
             title = title.decode()
         return title.replace('\x00', '')
 
+    def __is_the_end(self, reader: PdfFileReader, outlines: list, idx: int) -> bool:
+        left_pages = reader.numPages - reader.getDestinationPageNumber(outlines[idx])
+        return self.__chapter_pages(reader, outlines, idx) == left_pages
+
     def make_new(self, book: dict):
         self.__add_chapter(book)
         self.__save()
 
-    def __move_to_current_place(self, current_level: int, outlines: list,
-                                current_place: str) -> bool:
+    def __move_to_current_place(self, current_level: int, outlines: list, chapter: str) -> bool:
         found = False
         added_elements = 0
 
-        if current_place:
+        if chapter:
             for idx, outline in enumerate(outlines):
                 self.state_list.append((current_level, outlines, idx))
                 added_elements += 1
-                if isinstance(outline, Destination):
-                    chapter = self.__get_chapter_from_outline(outline)
-                    found = (chapter == current_place)
-                elif self.__move_to_current_place(current_level + 1, outline, current_place):
-                    found = True
+                found = isinstance(outline, Destination) and (
+                    self.__get_chapter_from_outline(outline) == chapter
+                )
+                found = found or self.__move_to_current_place(current_level + 1, outline, chapter)
                 if found:
                     break
 
@@ -254,6 +255,7 @@ def main():
             connector.insert_book(book.name)
 
     Paper(connector).make_new(random.choice(connector.list(extra_conditions='active = 1')))
+
 
 if __name__ == '__main__':
     main()
