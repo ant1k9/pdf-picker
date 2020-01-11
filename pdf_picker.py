@@ -206,10 +206,12 @@ class Paper:
             for idx, outline in enumerate(outlines):
                 self.state_list.append((current_level, outlines, idx))
                 added_elements += 1
-                found = isinstance(outline, Destination) and (
-                    self.__get_chapter_from_outline(outline) == chapter
-                )
-                found = found or self.__move_to_current_place(current_level + 1, outline, chapter)
+                if isinstance(outline, Destination):
+                    found = (self.__get_chapter_from_outline(outline) == chapter)
+                else:
+                    found = found or (
+                        self.__move_to_current_place(current_level + 1, outline, chapter)
+                    )
                 if found:
                     break
 
