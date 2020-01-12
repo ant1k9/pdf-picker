@@ -113,7 +113,8 @@ class Paper:
                 if collected_pages >= SOFT_LIMIT or hash_size == len(self.state_list):
                     for _ in range(5):
                         if len(self.state_list) == hash_size:
-                            if self.__is_the_end(reader, outlines, idx):
+                            if isinstance(outlines[idx], Destination) \
+                                    and self.__is_the_end(reader, outlines, idx):
                                 continue
                             self.__up(reader, outlines, idx)
                             hash_size = len(self.state_list)
@@ -256,7 +257,8 @@ def main():
         if book.is_file() and book.name not in existing_books:
             connector.insert_book(book.name)
 
-    Paper(connector).make_new(random.choice(connector.list(extra_conditions='active = 1')))
+    book = random.choice(connector.list(extra_conditions='active = 1'))
+    Paper(connector).make_new(book)
 
 
 if __name__ == '__main__':
