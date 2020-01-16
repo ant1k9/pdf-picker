@@ -101,30 +101,17 @@ class Paper:
                 chapter_pages = self.__chapter_pages(reader, outlines, idx)
                 hash_size = len(self.state_list)
 
-                if chapter_pages + collected_pages > HARD_LIMIT:
-                    self.__down(reader, outlines, idx)
-                    if len(self.state_list) != hash_size:
-                        continue
+                if chapter_pages + collected_pages > HARD_LIMIT \
+                        and self.__go_down_for_small_chapter(reader, outlines, idx, hash_size):
+                    continue
 
                 self.__choose(reader, outlines, idx)
                 collected_pages += chapter_pages
                 self.__next(reader, outlines, idx)
 
                 if collected_pages >= SOFT_LIMIT or hash_size == len(self.state_list):
-                    for _ in range(5):
-                        if len(self.state_list) == hash_size:
-                            if isinstance(outlines[idx], Destination) \
-                                    and self.__is_the_end(reader, outlines, idx):
-                                continue
-                            self.__up(reader, outlines, idx)
-                            hash_size = len(self.state_list)
-                            _, outlines, idx = self.state_list[-1]
-                            self.__next(reader, outlines, idx)
-                        else:
-                            break
-                    else:
+                    if not self.__find_next_place_to_read(reader, outlines, idx, hash_size):
                         self.__connector.delete_book(book.get('title'))
-
                     _, outlines, idx = self.state_list[-1]
                     chapter = self.__get_chapter_from_outline(outlines[idx])
                     self.__connector.update_current_place(book.get('title'), chapter)
@@ -157,17 +144,15 @@ class Paper:
             next_outline = outlines[idx_]
             if isinstance(next_outline, Destination):
                 return reader.getDestinationPageNumber(next_outline) - current_page
-        current_level, *_ = self.state_list[-1]
 
+        current_level, *_ = self.state_list[-1]
         if current_level != START_LEVEL:
-            for state in reversed(self.state_list):
-                previous_level, previous_outlines, previous_idx = state
-                if previous_level < current_level:
-                    for outline in previous_outlines[(previous_idx + 1):]:
-                        if isinstance(outline, Destination):
-                            chapter_pages = reader.getDestinationPageNumber(outline) - current_page
-                            if chapter_pages > 0:
-                                return chapter_pages
+            pages_to_upper_chapter = self.__pages_to_next_upper_chapter(
+                reader, current_page, current_level
+            )
+            if pages_to_upper_chapter > 0:
+                return pages_to_upper_chapter
+
         return reader.numPages - current_page
 
     def __choose(self, reader: PdfFileReader, outlines: list, idx: int):
@@ -185,11 +170,34 @@ class Paper:
                 current_level, *_ = self.state_list[-1]
                 self.state_list.append((current_level + 1, next_outline, 0))
 
+    def __find_next_place_to_read(
+            self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int) -> bool:
+        for _ in range(5):
+            if len(self.state_list) == hash_size:
+                if isinstance(outlines[idx], Destination) \
+                        and self.__is_the_end(reader, outlines, idx):
+                    continue
+                self.__up(reader, outlines, idx)
+                hash_size = len(self.state_list)
+                _, outlines, idx = self.state_list[-1]
+                self.__next(reader, outlines, idx)
+            else:
+                return True
+        else:
+            return False
+
     def __get_chapter_from_outline(self, outline: Destination) -> str:
         title = outline.get('/Title')
         if isinstance(title, bytes):
             title = title.decode()
         return title.replace('\x00', '')
+
+    def __go_down_for_small_chapter(
+            self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int) -> bool:
+        self.__down(reader, outlines, idx)
+        if len(self.state_list) != hash_size:
+            return True
+        return False
 
     def __is_the_end(self, reader: PdfFileReader, outlines: list, idx: int) -> bool:
         left_pages = reader.numPages - reader.getDestinationPageNumber(outlines[idx])
@@ -227,6 +235,18 @@ class Paper:
                 current_level, *_ = self.state_list[-1]
                 self.state_list.append((current_level, outlines, idx_))
                 return
+
+    def __pages_to_next_upper_chapter(
+            self, reader: PdfFileReader, current_page: int, current_level: int) -> int:
+        for state in reversed(self.state_list):
+            previous_level, previous_outlines, previous_idx = state
+            if previous_level < current_level:
+                for outline in previous_outlines[(previous_idx + 1):]:
+                    if isinstance(outline, Destination):
+                        chapter_pages = reader.getDestinationPageNumber(outline) - current_page
+                        if chapter_pages > 0:
+                            return chapter_pages
+        return 0
 
     def __save(self):
         current_date_prefix = datetime.strftime(datetime.now(), '%Y%m%d_%H%M%S')
