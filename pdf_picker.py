@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import pathlib
 import random
+import sys
 import typing
 
 from datetime import datetime
@@ -40,14 +41,14 @@ class DBConnector:
 
     def delete_book(self, filename: str):
         self.__commit(
-            f'UPDATE {PDF_LIBRARY} SET active = 0 '
-            f'WHERE title = "{filename}";'
+            f"UPDATE {PDF_LIBRARY} SET active = 0 "
+            f"WHERE title = '{filename}';"
         )
 
-    def insert_book(self, filename: str):
+    def insert_book(self, filename: str, topic: str):
         self.__commit(
-            f'INSERT INTO {PDF_LIBRARY} (title, active) '
-            f'VALUES ("{filename}", 1);'
+            f"INSERT INTO {PDF_LIBRARY} (title, topic, active) "
+            f"VALUES ('{filename}', '{topic}', 1);"
         )
 
     def list(self, *, extra_conditions=''):
@@ -58,21 +59,29 @@ class DBConnector:
         )
         return [dict(row) for row in self.cursor.execute(query)]
 
+    def topics(self):
+        return [
+            row['topic'] for row in self.cursor.execute(
+                f'SELECT DISTINCT topic FROM {PDF_LIBRARY} WHERE active'
+            )
+        ]
+
     def migrate(self):
         self.__commit(
             f"""
             CREATE TABLE IF NOT EXISTS {PDF_LIBRARY} (
                 title VARCHAR(256) PRIMARY KEY NOT NULL,
+                topic VARCHAR(32) NOT NULL,
                 current_place VARCHAR(256),
                 active BOOLEAN
-            )
+            );
             """
         )
 
     def update_current_place(self, filename: str, current_place: str):
         self.__commit(
-            f'UPDATE {PDF_LIBRARY} SET current_place = "{current_place}" '
-            f'WHERE title = "{filename}";'
+            f"UPDATE {PDF_LIBRARY} SET current_place = '{current_place}' "
+            f"WHERE title = '{filename}';"
         )
 
 
@@ -275,10 +284,20 @@ def main():
     existing_books = set(row['title'] for row in connector.list())
     for book in pathlib.Path(LIBRARY_DIR).iterdir():
         if book.is_file() and book.name not in existing_books:
-            connector.insert_book(book.name)
+            topic = input(f'Choose a topic for book "{book}": ')
+            connector.insert_book(book.name, topic)
 
-    book = random.choice(connector.list(extra_conditions='active = 1'))
-    Paper(connector).make_new(book)
+    try:
+        book = random.choice(connector.list(
+            extra_conditions=f"active = 1 AND topic = '{sys.argv[1]}'"
+        ))
+        Paper(connector).make_new(book)
+    except IndexError:
+        print(
+            'Choose an existing topic for a paper:\n\033[1m   ' +
+            '\n   '.join(connector.topics()) +
+            '\033[0m'
+        )
 
 
 if __name__ == '__main__':
