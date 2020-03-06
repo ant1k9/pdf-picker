@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-import os
 import pathlib
+import random
+import sys
 import typing
 
-from argparse import ArgumentParser
 from datetime import datetime
-from glob import glob
 from os.path import join
 
 import sqlite3
@@ -16,25 +15,13 @@ from PyPDF2.generic import Destination
 ## Constants
 ############################################################
 
-CONTROL_OPTIONS = """CONTROL OPTIONS:
-    b (back)    - previous chapter
-    c (choose)  - choose to add to a paper
-    d (down)    - down to inner chapters
-    f (finish)  - save the paper and exit
-    n (next)    - next chapter
-    o (omit)    - omit this file
-    q (quit)    - exit without save
-    u (up)      - go to the upper chapter list
-"""
-
-DATABASE = 'library.db'
+DATABASE = 'library_everyday.db'
 LIBRARY_DIR = 'library'
 MAX_LEN = 5
 PDF_LIBRARY = 'pdf_library'
 START_LEVEL = 0
-
-TAB = ' ' * 5
-CHOOSE_INDEX_FOR = TAB + 'Choose #n-th book to {operation} : '
+SOFT_LIMIT = 20
+HARD_LIMIT = 40
 
 ############################################################
 ## Database Connector
@@ -54,14 +41,14 @@ class DBConnector:
 
     def delete_book(self, filename: str):
         self.__commit(
-            f'UPDATE {PDF_LIBRARY} SET active = 0 '
-            f'WHERE title = "{filename}";'
+            f"UPDATE {PDF_LIBRARY} SET active = 0 "
+            f"WHERE title = '{filename}';"
         )
 
-    def insert_book(self, filename: str):
+    def insert_book(self, filename: str, topic: str):
         self.__commit(
-            f'INSERT INTO {PDF_LIBRARY} (title, active) '
-            f'VALUES ("{filename}", 1);'
+            f"INSERT INTO {PDF_LIBRARY} (title, topic, active) "
+            f"VALUES ('{filename}', '{topic}', 1);"
         )
 
     def list(self, *, extra_conditions=''):
@@ -72,21 +59,29 @@ class DBConnector:
         )
         return [dict(row) for row in self.cursor.execute(query)]
 
+    def topics(self):
+        return [
+            row['topic'] for row in self.cursor.execute(
+                f'SELECT DISTINCT topic FROM {PDF_LIBRARY} WHERE active'
+            )
+        ]
+
     def migrate(self):
         self.__commit(
             f"""
             CREATE TABLE IF NOT EXISTS {PDF_LIBRARY} (
                 title VARCHAR(256) PRIMARY KEY NOT NULL,
+                topic VARCHAR(32) NOT NULL,
                 current_place VARCHAR(256),
                 active BOOLEAN
-            )
+            );
             """
         )
 
     def update_current_place(self, filename: str, current_place: str):
         self.__commit(
-            f'UPDATE {PDF_LIBRARY} SET current_place = "{current_place}" '
-            f'WHERE title = "{filename}";'
+            f"UPDATE {PDF_LIBRARY} SET current_place = '{current_place}' "
+            f"WHERE title = '{filename}';"
         )
 
 
@@ -102,36 +97,45 @@ class Paper:
         self.__writer = PdfFileWriter()
         self.__written_pages = 0
 
+    def __accumulate_pages(self, reader: PdfFileReader, book: dict):
+        idx = 0
+        collected_pages = 0
+
+        while True:
+            current_level, outlines, idx = self.state_list[-1]
+            current_outline = outlines[idx]
+            chapter = self.__get_chapter_from_outline(current_outline)
+
+            if isinstance(current_outline, Destination):
+                chapter_pages = self.__chapter_pages(reader, outlines, idx)
+                hash_size = len(self.state_list)
+
+                if chapter_pages + collected_pages > HARD_LIMIT \
+                        and self.__go_down_for_small_chapter(reader, outlines, idx, hash_size):
+                    continue
+
+                self.__choose(reader, outlines, idx)
+                collected_pages += chapter_pages
+                self.__next(reader, outlines, idx)
+
+                if collected_pages >= SOFT_LIMIT or hash_size == len(self.state_list):
+                    if not self.__find_next_place_to_read(reader, outlines, idx, hash_size):
+                        self.__connector.delete_book(book.get('title'))
+                    _, outlines, idx = self.state_list[-1]
+                    chapter = self.__get_chapter_from_outline(outlines[idx])
+                    self.__connector.update_current_place(book.get('title'), chapter)
+                    break
+
     def __add_chapter(self, book: dict):
         self.state_list: typing.List[tuple] = []
-        idx = 0
         reader = PdfFileReader(join(LIBRARY_DIR, book.get('title', '')), strict=False)
         outlines = reader.outlines
+        idx = 0
 
         if outlines:
             self.__move_to_current_place(START_LEVEL, outlines, book.get('current_place', ''))
             self.state_list = self.state_list or [(START_LEVEL, outlines, idx)]
-
-            while True:
-                current_level, outlines, idx = self.state_list[-1]
-                current_outline = outlines[idx]
-                chapter = self.__get_chapter_from_outline(current_outline)
-                if isinstance(current_outline, Destination):
-                    print(f'\nBook: {book.get("title")}')
-                    print(f'[{current_level}] Chapter: {chapter}')
-                    print(f'Number of pages: {self.__chapter_pages(reader, outlines, idx)}\n')
-                    print(f'Already written: {self.__written_pages}\n')
-                    print(CONTROL_OPTIONS)
-
-                cmd = input("Choose an option: ")
-                self.__perform(cmd, reader, outlines, idx)
-
-                if cmd.startswith('c'):
-                    self.__connector.update_current_place(book.get('title'), chapter)
-                    self.__next(reader, outlines, idx)
-                elif cmd.startswith('q') or cmd.startswith('o') or cmd.startswith('f'):
-                    self.__soft_exit = cmd.startswith('q') or cmd.startswith('f')
-                    break
+            self.__accumulate_pages(reader, book)
 
     def __back(self, reader: PdfFileReader, outlines: list, idx: int):
         if len(self.state_list) > 1:
@@ -142,24 +146,22 @@ class Paper:
                     break
                 self.state_list.pop()
 
-    def __chapter_pages(self, reader: PdfFileReader, outlines: list, idx: int):
+    def __chapter_pages(self, reader: PdfFileReader, outlines: list, idx: int) -> int:
         current_outline = outlines[idx]
         current_page = reader.getDestinationPageNumber(current_outline)
         for idx_ in range(idx + 1, len(outlines)):
             next_outline = outlines[idx_]
             if isinstance(next_outline, Destination):
                 return reader.getDestinationPageNumber(next_outline) - current_page
-        current_level, *_ = self.state_list[-1]
 
+        current_level, *_ = self.state_list[-1]
         if current_level != START_LEVEL:
-            for state in reversed(self.state_list):
-                previous_level, previous_outlines, previous_idx = state
-                if previous_level < current_level:
-                    for outline in previous_outlines[(previous_idx + 1):]:
-                        if isinstance(outline, Destination):
-                            chapter_pages = reader.getDestinationPageNumber(outline) - current_page
-                            if chapter_pages > 0:
-                                return reader.getDestinationPageNumber(outline) - current_page
+            pages_to_upper_chapter = self.__pages_to_next_upper_chapter(
+                reader, current_page, current_level
+            )
+            if pages_to_upper_chapter > 0:
+                return pages_to_upper_chapter
+
         return reader.numPages - current_page
 
     def __choose(self, reader: PdfFileReader, outlines: list, idx: int):
@@ -177,37 +179,57 @@ class Paper:
                 current_level, *_ = self.state_list[-1]
                 self.state_list.append((current_level + 1, next_outline, 0))
 
+    def __find_next_place_to_read(
+            self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int) -> bool:
+        for _ in range(5):
+            if len(self.state_list) == hash_size:
+                if isinstance(outlines[idx], Destination) \
+                        and self.__is_the_end(reader, outlines, idx):
+                    continue
+                self.__up(reader, outlines, idx)
+                hash_size = len(self.state_list)
+                _, outlines, idx = self.state_list[-1]
+                self.__next(reader, outlines, idx)
+            else:
+                return True
+        else:
+            return False
+
     def __get_chapter_from_outline(self, outline: Destination) -> str:
         title = outline.get('/Title')
         if isinstance(title, bytes):
             title = title.decode()
         return title.replace('\x00', '')
 
-    def __finish(self, reader: PdfFileReader, outlines: list, idx: int):
+    def __go_down_for_small_chapter(
+            self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int) -> bool:
+        self.__down(reader, outlines, idx)
+        if len(self.state_list) != hash_size:
+            return True
+        return False
+
+    def __is_the_end(self, reader: PdfFileReader, outlines: list, idx: int) -> bool:
+        left_pages = reader.numPages - reader.getDestinationPageNumber(outlines[idx])
+        return self.__chapter_pages(reader, outlines, idx) == left_pages
+
+    def make_new(self, book: dict):
+        self.__add_chapter(book)
         self.__save()
 
-    def make_new(self):
-        library = self.__connector.list(extra_conditions='active = 1')
-        for book in library:
-            if self.__soft_exit:
-                return
-            self.__add_chapter(book)
-        self.__save()
-
-    def __move_to_current_place(self, current_level: int, outlines: list,
-                                current_place: str) -> bool:
+    def __move_to_current_place(self, current_level: int, outlines: list, chapter: str) -> bool:
         found = False
         added_elements = 0
 
-        if current_place:
+        if chapter:
             for idx, outline in enumerate(outlines):
                 self.state_list.append((current_level, outlines, idx))
                 added_elements += 1
                 if isinstance(outline, Destination):
-                    chapter = self.__get_chapter_from_outline(outline)
-                    found = (chapter == current_place)
-                elif self.__move_to_current_place(current_level + 1, outline, current_place):
-                    found = True
+                    found = (self.__get_chapter_from_outline(outline) == chapter)
+                else:
+                    found = found or (
+                        self.__move_to_current_place(current_level + 1, outline, chapter)
+                    )
                 if found:
                     break
 
@@ -223,28 +245,17 @@ class Paper:
                 self.state_list.append((current_level, outlines, idx_))
                 return
 
-    def __omit(self, reader: PdfFileReader, outlines: list, idx: int):
-        pass
-
-    def __perform(self, command: str, reader: PdfFileReader, outlines: list, idx: int):
-        HANDLERS = {
-            'b': self.__back,
-            'c': self.__choose,
-            'd': self.__down,
-            'f': self.__finish,
-            'n': self.__next,
-            'o': self.__omit,
-            'q': self.__quit,
-            'u': self.__up,
-        }
-
-        for key in HANDLERS:
-            if command.startswith(key):
-                handler = HANDLERS[key]
-                handler(reader, outlines, idx)
-
-    def __quit(self, reader: PdfFileReader, outlines: list, idx: int):
-        pass
+    def __pages_to_next_upper_chapter(
+            self, reader: PdfFileReader, current_page: int, current_level: int) -> int:
+        for state in reversed(self.state_list):
+            previous_level, previous_outlines, previous_idx = state
+            if previous_level < current_level:
+                for outline in previous_outlines[(previous_idx + 1):]:
+                    if isinstance(outline, Destination):
+                        chapter_pages = reader.getDestinationPageNumber(outline) - current_page
+                        if chapter_pages > 0:
+                            return chapter_pages
+        return 0
 
     def __save(self):
         current_date_prefix = datetime.strftime(datetime.now(), '%Y%m%d_%H%M%S')
@@ -261,102 +272,33 @@ class Paper:
 
 
 ############################################################
-## Switch controller for all operations with library
-############################################################
-
-class Controller:
-
-    def __init__(self):
-        self.__connector = DBConnector()
-
-    def create_new_paper(self):
-        Paper(self.__connector).make_new()
-
-    def exec_operation(self, operation: str):
-        callback = {
-            'add': self.__connector.insert_book,
-            'delete': self.__connector.delete_book,
-            'list': self.__list,
-        }[operation]
-
-        library = self.__list(operation)
-        self.__print_library(library)
-
-        if operation != 'list' and library:
-            index_str = input(CHOOSE_INDEX_FOR.format(operation=operation)).strip()
-            index = int(index_str) if index_str.isdigit() else 0
-            if 0 < index <= len(library):
-                callback(library[index - 1]['title'])
-                self.exec_operation(operation)
-
-    def __list(self, operation: str) -> typing.List[dict]:
-        if operation == 'add':
-            library = set(os.path.basename(book) for book in glob('library/*.pdf'))
-            current_library = set(row['title'] for row in self.__connector.list())
-            return [
-                {'title': book, 'active': 0}
-                for book in library.difference(current_library)
-            ]
-
-        extra_conditions = {
-            'delete': 'active = 1',
-            'list': 'active = 1',
-        }[operation]
-        return self.__connector.list(extra_conditions=extra_conditions)
-
-    def __print_library(self, library: typing.List[dict]):
-        library_str = 'Library is empty'
-        if library:
-            title_max_len = max([len(row['title']) for row in library])
-            library_str = f'\n{TAB}{"title".ljust(title_max_len, " ")}{TAB}active\n'
-            library_str += TAB + '-' * (len(library_str) - 12 - MAX_LEN) + TAB + '-' * 6 + '\n'
-            for idx, row in enumerate(library):
-                library_str += (
-                    f'{(str(idx + 1) + ")").ljust(MAX_LEN)}'
-                    f'{row["title"].ljust(title_max_len, " ")}'
-                    f'{TAB}  {row["active"]}\n'
-                )
-        print(library_str)
-
-
-############################################################
 ## Main
 ############################################################
 
-def init():
+def main():
     pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True)
     pathlib.Path(DATABASE).touch(exist_ok=True)
-    DBConnector().migrate()
+    connector = DBConnector()
+    connector.migrate()
+
+    existing_books = set(row['title'] for row in connector.list())
+    for book in pathlib.Path(LIBRARY_DIR).iterdir():
+        if book.is_file() and book.name not in existing_books:
+            topic = input(f'Choose a topic for book "{book}": ')
+            connector.insert_book(book.name, topic)
+
+    try:
+        book = random.choice(connector.list(
+            extra_conditions=f"active = 1 AND topic = '{sys.argv[1]}'"
+        ))
+        Paper(connector).make_new(book)
+    except IndexError:
+        print(
+            'Choose an existing topic for a paper:\n\033[1m   ' +
+            '\n   '.join(connector.topics()) +
+            '\033[0m'
+        )
 
 
 if __name__ == '__main__':
-    init()
-    parser = ArgumentParser(description='Options for pdf paper slicing and merging')
-    parser.add_argument(
-        '-add', dest='add', action='store_const', const=True,
-        help='Add new book to current library'
-    )
-    parser.add_argument(
-        '-list', dest='list', action='store_const', const=True,
-        help='List current library'
-    )
-    parser.add_argument(
-        '-paper', dest='paper', action='store_const', const=True,
-        help='Create new paper to read'
-    )
-    parser.add_argument(
-        '-remove', dest='remove', action='store_const', const=True,
-        help='Remove book from database'
-    )
-
-    args = vars(parser.parse_args())
-    controller = Controller()
-
-    if args['list']:
-        controller.exec_operation('list')
-    elif args['add']:
-        controller.exec_operation('add')
-    elif args['remove']:
-        controller.exec_operation('delete')
-    elif args['paper']:
-        controller.create_new_paper()
+    main()
