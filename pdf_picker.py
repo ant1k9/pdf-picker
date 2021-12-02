@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import pathlib
 import random
@@ -12,7 +13,7 @@ from PyPDF2 import PdfFileReader, PdfFileWriter
 from PyPDF2.generic import Destination
 
 ############################################################
-## Constants
+# Constants
 ############################################################
 
 DATABASE = 'library_everyday.db'
@@ -24,7 +25,7 @@ SOFT_LIMIT = 20
 HARD_LIMIT = 40
 
 ############################################################
-## Database Connector
+# Database Connector
 ############################################################
 
 
@@ -34,6 +35,12 @@ class DBConnector:
         self.connection = sqlite3.Connection(DATABASE)
         self.connection.row_factory = sqlite3.Row
         self.cursor = self.connection.cursor()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_trace):
+        self.connection.close()
 
     def __commit(self, command: str):
         self.cursor.execute(command)
@@ -86,23 +93,24 @@ class DBConnector:
 
 
 ############################################################
-## Pdf iterator, combiner and linker
+# Pdf iterator, combiner and linker
 ############################################################
 
 class Paper:
 
     def __init__(self, connector):
-        self.__connector = connector
-        self.__soft_exit = False
-        self.__writer = PdfFileWriter()
-        self.__written_pages = 0
+        self._connector = connector
+        self._soft_exit = False
+        self._writer = PdfFileWriter()
+        self._written_pages = 0
+        self.state_list: typing.List[tuple] = []
 
     def __accumulate_pages(self, reader: PdfFileReader, book: dict):
         idx = 0
         collected_pages = 0
 
         while True:
-            current_level, outlines, idx = self.state_list[-1]
+            _, outlines, idx = self.state_list[-1]
             current_outline = outlines[idx]
             chapter = self.__get_chapter_from_outline(current_outline)
 
@@ -120,14 +128,13 @@ class Paper:
 
                 if collected_pages >= SOFT_LIMIT or hash_size == len(self.state_list):
                     if not self.__find_next_place_to_read(reader, outlines, idx, hash_size):
-                        self.__connector.delete_book(book.get('title'))
+                        self._connector.delete_book(book.get('title'))
                     _, outlines, idx = self.state_list[-1]
                     chapter = self.__get_chapter_from_outline(outlines[idx])
-                    self.__connector.update_current_place(book.get('title'), chapter)
+                    self._connector.update_current_place(book.get('title'), chapter)
                     break
 
     def __add_chapter(self, book: dict):
-        self.state_list: typing.List[tuple] = []
         reader = PdfFileReader(join(LIBRARY_DIR, book.get('title', '')), strict=False)
         outlines = reader.outlines
         idx = 0
@@ -169,8 +176,8 @@ class Paper:
         pages = self.__chapter_pages(reader, outlines, idx)
         current_page = reader.getDestinationPageNumber(current_outline)
         for page in range(current_page, current_page + pages):
-            self.__writer.addPage(reader.getPage(page))
-            self.__written_pages += 1
+            self._writer.addPage(reader.getPage(page))
+            self._written_pages += 1
 
     def __down(self, reader: PdfFileReader, outlines: list, idx: int):
         if idx < len(outlines) - 1:
@@ -180,7 +187,8 @@ class Paper:
                 self.state_list.append((current_level + 1, next_outline, 0))
 
     def __find_next_place_to_read(
-            self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int) -> bool:
+        self, reader: PdfFileReader, outlines: list, idx: int, hash_size: int,
+    ) -> bool:
         for _ in range(5):
             if len(self.state_list) == hash_size:
                 if isinstance(outlines[idx], Destination) \
@@ -192,8 +200,7 @@ class Paper:
                 self.__next(reader, outlines, idx)
             else:
                 return True
-        else:
-            return False
+        return False
 
     def __get_chapter_from_outline(self, outline: Destination) -> str:
         title = outline.get('/Title')
@@ -260,7 +267,7 @@ class Paper:
     def __save(self):
         current_date_prefix = datetime.strftime(datetime.now(), '%Y%m%d_%H%M%S')
         with open(f'{current_date_prefix}_paper.pdf', 'wb') as wfile:
-            self.__writer.write(wfile)
+            self._writer.write(wfile)
 
     def __up(self, reader: PdfFileReader, outlines: list, idx: int):
         reference_level, *_ = self.state_list[-1]
@@ -272,32 +279,33 @@ class Paper:
 
 
 ############################################################
-## Main
+# Main
 ############################################################
 
 def main():
     pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True)
     pathlib.Path(DATABASE).touch(exist_ok=True)
-    connector = DBConnector()
-    connector.migrate()
 
-    existing_books = set(row['title'] for row in connector.list())
-    for book in pathlib.Path(LIBRARY_DIR).iterdir():
-        if book.is_file() and book.name not in existing_books:
-            topic = input(f'Choose a topic for book "{book}": ')
-            connector.insert_book(book.name, topic)
+    with DBConnector() as connector:
+        connector.migrate()
 
-    try:
-        book = random.choice(connector.list(
-            extra_conditions=f"active = 1 AND topic = '{sys.argv[1]}'"
-        ))
-        Paper(connector).make_new(book)
-    except IndexError:
-        print(
-            'Choose an existing topic for a paper:\n\033[1m   ' +
-            '\n   '.join(connector.topics()) +
-            '\033[0m'
-        )
+        existing_books = set(row['title'] for row in connector.list())
+        for book in pathlib.Path(LIBRARY_DIR).iterdir():
+            if book.is_file() and book.name not in existing_books:
+                topic = input(f'Choose a topic for book "{book}": ')
+                connector.insert_book(book.name, topic)
+
+        try:
+            book = random.choice(connector.list(
+                extra_conditions=f"active = 1 AND topic = '{sys.argv[1]}'"
+            ))
+            Paper(connector).make_new(book)
+        except IndexError:
+            print(
+                'Choose an existing topic for a paper:\n\033[1m   ' +
+                '\n   '.join(connector.topics()) +
+                '\033[0m'
+            )
 
 
 if __name__ == '__main__':
