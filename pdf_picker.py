@@ -18,11 +18,15 @@ from PyPDF2.generic import Destination
 
 DATABASE = 'library_everyday.db'
 LIBRARY_DIR = 'library'
-MAX_LEN = 5
+
 PDF_LIBRARY = 'pdf_library'
+
 START_LEVEL = 0
+MAX_LEN = 5
 SOFT_LIMIT = 20
 HARD_LIMIT = 40
+
+ANY_TOPIC = 'any'
 
 ############################################################
 # Database Connector
@@ -296,14 +300,21 @@ def main():
                 connector.insert_book(book.name, topic)
 
         try:
-            book = random.choice(connector.list(
-                extra_conditions=f"active = 1 AND topic = '{sys.argv[1]}'"
-            ))
-            Paper(connector).make_new(book)
+            extra_conditions = 'active = 1'
+            if (topic := sys.argv[1]) != ANY_TOPIC:
+                extra_conditions = f"{extra_conditions} AND topic = '{topic}'"
+
+            Paper(connector).make_new(
+                random.choice(
+                    connector.list(
+                        extra_conditions=extra_conditions
+                    )
+                )
+            )
         except IndexError:
             print(
                 'Choose an existing topic for a paper:\n\033[1m   ' +
-                '\n   '.join(connector.topics()) +
+                '\n   '.join([ANY_TOPIC] + connector.topics()) +
                 '\033[0m'
             )
 
