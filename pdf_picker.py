@@ -387,3 +387,5 @@ if __name__ == '__main__':
             print('no chapters to open')
     elif args.command == 'list':
         list_topics()
+    else:
+        parser.print_help()
