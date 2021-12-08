@@ -367,8 +367,8 @@ def init_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == '__main__':
-    pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True)
-    pathlib.Path(CHAPTERS_DIR).mkdir(exist_ok=True)
+    pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True, parents=True)
+    pathlib.Path(CHAPTERS_DIR).mkdir(exist_ok=True, parents=True)
     pathlib.Path(DATABASE).touch(exist_ok=True)
 
     parser = init_parser()
