@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+import argparse
+import os
 import pathlib
 import random
-import sys
+import shutil
 import typing
 
 from datetime import datetime
@@ -18,6 +20,7 @@ from PyPDF2.generic import Destination
 
 DATABASE = 'library_everyday.db'
 LIBRARY_DIR = 'library'
+CHAPTERS_DIR = 'chapters'
 
 PDF_LIBRARY = 'pdf_library'
 
@@ -223,9 +226,9 @@ class Paper:
         left_pages = reader.numPages - reader.getDestinationPageNumber(outlines[idx])
         return self.__chapter_pages(reader, outlines, idx) == left_pages
 
-    def make_new(self, book: dict):
+    def make_new(self, book: dict) -> str:
         self.__add_chapter(book)
-        self.__save()
+        return self.__save()
 
     def __move_to_current_place(self, current_level: int, outlines: list, chapter: str) -> bool:
         found = False
@@ -268,10 +271,12 @@ class Paper:
                             return chapter_pages
         return 0
 
-    def __save(self):
-        current_date_prefix = datetime.strftime(datetime.now(), '%Y%m%d_%H%M%S')
-        with open(f'{current_date_prefix}_paper.pdf', 'wb') as wfile:
+    def __save(self) -> str:
+        filename = datetime.strftime(datetime.now(), f'%Y%m%d_%H%M%S_paper.pdf')
+        filename = os.path.join(CHAPTERS_DIR, filename)
+        with open(filename, 'wb') as wfile:
             self._writer.write(wfile)
+            return filename
 
     def __up(self, reader: PdfFileReader, outlines: list, idx: int):
         reference_level, *_ = self.state_list[-1]
@@ -286,10 +291,7 @@ class Paper:
 # Main
 ############################################################
 
-def main():
-    pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True)
-    pathlib.Path(DATABASE).touch(exist_ok=True)
-
+def generate(topic: str) -> str:
     with DBConnector() as connector:
         connector.migrate()
 
@@ -301,10 +303,10 @@ def main():
 
         try:
             extra_conditions = 'active = 1'
-            if (topic := sys.argv[1]) != ANY_TOPIC:
+            if topic != ANY_TOPIC:
                 extra_conditions = f"{extra_conditions} AND topic = '{topic}'"
 
-            Paper(connector).make_new(
+            return Paper(connector).make_new(
                 random.choice(
                     connector.list(
                         extra_conditions=extra_conditions
@@ -319,5 +321,69 @@ def main():
             )
 
 
+def list_topics():
+    with DBConnector() as connector:
+        connector.migrate()
+        print('\n'.join([ANY_TOPIC] + connector.topics()))
+
+
+def add_book(filename: str):
+    if not filename.lower().endswith('.pdf'):
+        print('Only pdf files allowed')
+    shutil.copy(
+        filename,
+        os.path.join(
+            LIBRARY_DIR,
+            os.path.basename(filename),
+        ),
+    )
+
+
+def clean_chapters():
+    for file in os.listdir(CHAPTERS_DIR):
+        os.remove(os.path.join(CHAPTERS_DIR, file))
+
+
+def last_chapter() -> str:
+    for file in sorted(os.listdir(CHAPTERS_DIR), reverse=True):
+        return os.path.join(CHAPTERS_DIR, file)
+
+
+def init_parser() -> argparse.ArgumentParser:
+    _parser = argparse.ArgumentParser(description='PDF picker')
+
+    _subparser = _parser.add_subparsers(dest='command', title='command')
+    _subparser \
+        .add_parser('add', help='Add book to a library') \
+        .add_argument('book')
+    _subparser.add_parser('clean', help='Remove all generated chapters')
+    _subparser \
+        .add_parser('generate', help='Generate a new chapter') \
+        .add_argument('topic')
+    _subparser.add_parser('last', help='Open the last generated chapter')
+    _subparser.add_parser('list', help='List topics available for a new chapter')
+
+    return _parser
+
+
 if __name__ == '__main__':
-    main()
+    pathlib.Path(LIBRARY_DIR).mkdir(exist_ok=True)
+    pathlib.Path(CHAPTERS_DIR).mkdir(exist_ok=True)
+    pathlib.Path(DATABASE).touch(exist_ok=True)
+
+    parser = init_parser()
+    args = parser.parse_args()
+
+    if args.command == 'add':
+        add_book(args.book)
+    elif args.command == 'clean':
+        clean_chapters()
+    elif args.command == 'generate':
+        os.system(f'xdg-open {generate(args.topic)}')
+    elif args.command == 'last':
+        if (filename := last_chapter()):
+            os.system(f'xdg-open {filename}')
+        else:
+            print('no chapters to open')
+    elif args.command == 'list':
+        list_topics()
