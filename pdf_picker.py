@@ -291,6 +291,23 @@ class Paper:
 # Main
 ############################################################
 
+def add_book(filename: str):
+    if not filename.lower().endswith('.pdf'):
+        print('Only pdf files allowed')
+    shutil.copy(
+        filename,
+        os.path.join(
+            LIBRARY_DIR,
+            os.path.basename(filename),
+        ),
+    )
+
+
+def clean_chapters():
+    for file in os.listdir(CHAPTERS_DIR):
+        os.remove(os.path.join(CHAPTERS_DIR, file))
+
+
 def generate(topic: str) -> str:
     with DBConnector() as connector:
         connector.migrate()
@@ -321,32 +338,32 @@ def generate(topic: str) -> str:
             )
 
 
-def list_topics():
+def finish_book(book: str):
     with DBConnector() as connector:
         connector.migrate()
-        print('\n'.join([ANY_TOPIC] + connector.topics()))
-
-
-def add_book(filename: str):
-    if not filename.lower().endswith('.pdf'):
-        print('Only pdf files allowed')
-    shutil.copy(
-        filename,
-        os.path.join(
-            LIBRARY_DIR,
-            os.path.basename(filename),
-        ),
-    )
-
-
-def clean_chapters():
-    for file in os.listdir(CHAPTERS_DIR):
-        os.remove(os.path.join(CHAPTERS_DIR, file))
+        connector.delete_book(book)
 
 
 def last_chapter() -> str:
     for file in sorted(os.listdir(CHAPTERS_DIR), reverse=True):
         return os.path.join(CHAPTERS_DIR, file)
+
+
+def list_books():
+    with DBConnector() as connector:
+        connector.migrate()
+        books = connector.list(extra_conditions='active = 1')
+        max_topic_len = 0
+        for book in books:
+            max_topic_len = max(len(book['topic']), max_topic_len)
+        for book in books:
+            print(f'{book["topic"]: <{max_topic_len}} | {book["title"]}')
+
+
+def list_topics():
+    with DBConnector() as connector:
+        connector.migrate()
+        print('\n'.join([ANY_TOPIC] + connector.topics()))
 
 
 def init_parser() -> argparse.ArgumentParser:
@@ -356,10 +373,14 @@ def init_parser() -> argparse.ArgumentParser:
     _subparser \
         .add_parser('add', help='Add book to a library') \
         .add_argument('book')
+    _subparser.add_parser('books', help='List active books with their topics')
     _subparser.add_parser('clean', help='Remove all generated chapters')
     _subparser \
         .add_parser('generate', help='Generate a new chapter') \
         .add_argument('topic')
+    _subparser \
+        .add_parser('finish', help='Finish the active book') \
+        .add_argument('book')
     _subparser.add_parser('last', help='Open the last generated chapter')
     _subparser.add_parser('list', help='List topics available for a new chapter')
 
@@ -376,8 +397,12 @@ if __name__ == '__main__':
 
     if args.command == 'add':
         add_book(args.book)
+    elif args.command == 'books':
+        list_books()
     elif args.command == 'clean':
         clean_chapters()
+    elif args.command == 'finish':
+        finish_book(args.book)
     elif args.command == 'generate':
         os.system(f'xdg-open {generate(args.topic)}')
     elif args.command == 'last':
