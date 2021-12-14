@@ -344,20 +344,26 @@ def finish_book(book: str):
         connector.delete_book(book)
 
 
-def last_chapter() -> str:
-    for file in sorted(os.listdir(CHAPTERS_DIR), reverse=True):
-        return os.path.join(CHAPTERS_DIR, file)
-
-
-def list_books():
+def list_books(formatting='full'):
     with DBConnector() as connector:
         connector.migrate()
         books = connector.list(extra_conditions='active = 1')
+
+        if formatting == 'short':
+            for book in books:
+                print(book["title"])
+            return
+
         max_topic_len = 0
         for book in books:
             max_topic_len = max(len(book['topic']), max_topic_len)
         for book in books:
             print(f'{book["topic"]: <{max_topic_len}} | {book["title"]}')
+
+
+def last_chapter() -> str:
+    for file in sorted(os.listdir(CHAPTERS_DIR), reverse=True):
+        return os.path.join(CHAPTERS_DIR, file)
 
 
 def list_topics():
@@ -373,7 +379,9 @@ def init_parser() -> argparse.ArgumentParser:
     _subparser \
         .add_parser('add', help='Add book to a library') \
         .add_argument('book')
-    _subparser.add_parser('books', help='List active books with their topics')
+    _subparser \
+        .add_parser('books', help='List active books with their topics') \
+        .add_argument('--format', type=str, default='full', help='full|short')
     _subparser.add_parser('clean', help='Remove all generated chapters')
     _subparser \
         .add_parser('generate', help='Generate a new chapter') \
@@ -398,7 +406,7 @@ if __name__ == '__main__':
     if args.command == 'add':
         add_book(args.book)
     elif args.command == 'books':
-        list_books()
+        list_books(args.format)
     elif args.command == 'clean':
         clean_chapters()
     elif args.command == 'finish':
