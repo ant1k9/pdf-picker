@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import argparse
+import io
 import os
 import pathlib
 import random
@@ -272,8 +273,13 @@ class Paper:
         return 0
 
     def __save(self) -> str:
-        filename = datetime.strftime(datetime.now(), f'%Y%m%d_%H%M%S_paper.pdf')
+        filename = datetime.strftime(datetime.now(), '%Y%m%d_%H%M%S_paper.pdf')
         filename = os.path.join(CHAPTERS_DIR, filename)
+
+        # hack the invalid encoding by making double write
+        # usually the second write to a real file is OK
+        self._writer.write(io.BytesIO())
+
         with open(filename, 'wb') as wfile:
             self._writer.write(wfile)
             return filename
